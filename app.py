@@ -1,139 +1,106 @@
-import tkinter as tk
-from tkinter import ttk, messagebox
+from flask import Flask, render_template_string, request
 import pandas as pd
+import os
 
-# -----------------------------
-# Load Excel File
-# -----------------------------
-FILE_PATH = "skin_clinic_services.xlsx"
+app = Flask(__name__)
 
-try:
-    df = pd.read_excel(FILE_PATH)
-except:
-    messagebox.showerror("Error", "Excel file not found")
-    exit()
+# Load Excel
+EXCEL_FILE = "skin_clinic_services.xlsx"
+df = pd.read_excel(EXCEL_FILE)
 
-# Normalize text
-for col in ["Skin Type", "Skin Problems", "Gender"]:
-    df[col] = df[col].str.lower()
+# Normalize some data
+df['Gender'] = df['Gender'].str.lower()
+df['Skin Type'] = df['Skin Type'].str.lower()
+df['Skin Problem'] = df['Skin Problem'].str.lower()
 
-# -----------------------------
-# Scoring Function
-# -----------------------------
-def calculate_score(service, gender, age, skin_type, problems, budget):
-    score = service["Base Score"]
+# HTML Template (form + results)
+HTML_TEMPLATE = """
+<!doctype html>
+<html>
+<head>
+    <title>Skin Clinic Service Recommender</title>
+</head>
+<body>
+    <h1>Skin Clinic Service Recommender</h1>
+    {% if not results %}
+    <form method="POST">
+        Age: <input type="number" name="age" required><br><br>
+        Gender:
+        <select name="gender">
+            <option value="male">Male</option>
+            <option value="female">Female</option>
+        </select><br><br>
+        Skin Type:
+        <select name="skin_type">
+            <option value="normal">Normal</option>
+            <option value="dry">Dry</option>
+            <option value="oily">Oily</option>
+            <option value="combination">Combination</option>
+        </select><br><br>
+        Skin Problem (comma separated): <input type="text" name="skin_problem"><br><br>
+        Budget (PHP): <input type="number" name="budget" required><br><br>
+        Location: <input type="text" name="location"><br><br>
+        <input type="submit" value="Get Recommendations">
+    </form>
+    {% else %}
+        <h2>Recommended Services:</h2>
+        {% if results|length == 0 %}
+            <p>No services match your criteria within budget.</p>
+        {% else %}
+            <ul>
+            {% for r in results %}
+                <li>{{ r['Service Name'] }} - {{ r['Price (PHP)'] }} PHP</li>
+            {% endfor %}
+            </ul>
+        {% endif %}
+        <a href="/">Try Again</a>
+    {% endif %}
+</body>
+</html>
+"""
 
-    # Gender
-    if service["Gender"] == "any" or service["Gender"] == gender:
-        score += 2
+def split_values(cell):
+    return [x.strip().lower() for x in str(cell).split(",")]
 
-    # Age
-    if service["Min Age"] <= age <= service["Max Age"]:
-        score += 3
-    else:
-        return 0
+@app.route("/", methods=["GET", "POST"])
+def index():
+    if request.method == "POST":
+        age = int(request.form.get("age", 0))
+        gender = request.form.get("gender", "").lower()
+        skin_type = request.form.get("skin_type", "").lower()
+        skin_problem = request.form.get("skin_problem", "").lower()
+        budget = float(request.form.get("budget", 0))
+        location = request.form.get("location", "")
 
-    # Skin Type
-    if skin_type in service["Skin Type"]:
-        score += 3
+        user_problems = [x.strip() for x in skin_problem.split(",") if x.strip()]
 
-    # Skin Problems
-    for p in problems:
-        if p in service["Skin Problems"]:
-            score += 2
+        # Scoring
+        recommendations = []
+        for idx, row in df.iterrows():
+            score = 0
+            # Gender
+            if row['Gender'] == "any" or row['Gender'] == gender:
+                score += 1
+            # Age
+            if row['Min Age'] <= age <= row['Max Age']:
+                score += 1
+            # Skin Type
+            if gender in row['Skin Type'].lower() or skin_type in row['Skin Type'].lower():
+                score += 1
+            # Skin Problems
+            service_problems = split_values(row['Skin Problem'])
+            if all(p in service_problems for p in user_problems):
+                score += 1
+            # Budget
+            if row['Price (PHP)'] <= budget:
+                score += 1
 
-    # Budget
-    if service["Price_PHP"] > budget:
-        return 0
+            if score >= 3:  # Adjust threshold as needed
+                recommendations.append(row)
 
-    return score
+        return render_template_string(HTML_TEMPLATE, results=recommendations)
+    return render_template_string(HTML_TEMPLATE, results=None)
 
-# -----------------------------
-# Recommendation Logic
-# -----------------------------
-def recommend():
-    try:
-        age = int(age_entry.get())
-        budget = int(budget_entry.get())
-    except:
-        messagebox.showerror("Input Error", "Age and Budget must be numbers")
-        return
-
-    gender = gender_var.get().lower()
-    skin_type = skin_var.get().lower()
-    problems = [p.lower() for p in problems_listbox.get(0, tk.END) if problems_listbox.selection_includes(problems_listbox.get(0, tk.END).index(p))]
-    location = location_var.get()
-
-    results = []
-
-    for _, service in df.iterrows():
-        score = calculate_score(service, gender, age, skin_type, problems, budget)
-        if score > 0:
-            results.append((service["Service Name"], service["Price_PHP"], score))
-
-    results.sort(key=lambda x: x[2], reverse=True)
-
-    result_box.delete(0, tk.END)
-
-    if not results:
-        result_box.insert(tk.END, "❌ No suitable services found.")
-        return
-
-    result_box.insert(tk.END, f"📍 Nearest Branch: {location}")
-    result_box.insert(tk.END, "-" * 40)
-
-    for r in results[:5]:
-        result_box.insert(tk.END, f"✔ {r[0]} | {r[1]} PHP | Score: {r[2]}")
-
-# -----------------------------
-# GUI
-# -----------------------------
-root = tk.Tk()
-root.title("Skin Clinic Service Recommender")
-root.geometry("650x600")
-
-# Gender
-tk.Label(root, text="Gender").pack()
-gender_var = ttk.Combobox(root, values=["Male", "Female"], state="readonly")
-gender_var.pack()
-
-# Age
-tk.Label(root, text="Age").pack()
-age_entry = tk.Entry(root)
-age_entry.pack()
-
-# Skin Type
-tk.Label(root, text="Skin Type").pack()
-skin_var = ttk.Combobox(root, values=["Normal", "Oily", "Dry", "Combination", "Sensitive"], state="readonly")
-skin_var.pack()
-
-# Skin Problems
-tk.Label(root, text="Skin Problems (select multiple)").pack()
-problems_listbox = tk.Listbox(root, selectmode="multiple", height=6)
-for p in ["Acne", "Pigmentation", "Wrinkles", "Dullness", "Redness", "Dehydration"]:
-    problems_listbox.insert(tk.END, p)
-problems_listbox.pack()
-
-# Budget
-tk.Label(root, text="Budget (PHP)").pack()
-budget_entry = tk.Entry(root)
-budget_entry.pack()
-
-# Location
-tk.Label(root, text="Location / City").pack()
-location_var = ttk.Combobox(root, values=[
-    "Manila Branch",
-    "Quezon City Branch",
-    "Cavite Branch",
-    "Tagaytay Branch"
-], state="readonly")
-location_var.pack()
-
-# Button
-tk.Button(root, text="Recommend Service", command=recommend, bg="#4CAF50", fg="white").pack(pady=10)
-
-# Results
-result_box = tk.Listbox(root, width=80, height=12)
-result_box.pack()
-
-root.mainloop()
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
